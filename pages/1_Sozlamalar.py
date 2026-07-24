@@ -1,9 +1,10 @@
 """
-NurAuto - Sozlamalar sahifasi
-YouTube kanal ulash va sozlamalar
+NurAuto - Sozlamalar (YouTube OAuth)
 """
-
 import streamlit as st
+from google_auth_oauthlib.flow import Flow
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
 # Sahifa sozlamalari
 st.set_page_config(
@@ -12,15 +13,13 @@ st.set_page_config(
     layout="wide"
 )
 
-# Custom CSS
+# CSS
 st.markdown("""
 <style>
     .main {
         background: linear-gradient(180deg, #0F0F1E 0%, #1A1A2E 100%);
     }
-    h1, h2, h3 {
-        color: #FFFFFF !important;
-    }
+    h1, h2, h3 {color: #FFFFFF !important;}
     .stButton>button {
         background: linear-gradient(135deg, #8B5CF6 0%, #6D28D9 100%);
         color: white;
@@ -37,19 +36,16 @@ st.markdown("""
         border: 1px solid #8B5CF6;
         margin-bottom: 20px;
     }
-    .success-msg {
-        background: linear-gradient(135deg, #059669 0%, #10B981 100%);
-        padding: 15px;
-        border-radius: 10px;
-        color: white;
-        margin: 10px 0;
+    .channel-card {
+        background: linear-gradient(135deg, #1E1B4B 0%, #4C1D95 100%);
+        padding: 30px;
+        border-radius: 20px;
+        border: 2px solid #8B5CF6;
+        text-align: center;
+        margin: 20px 0;
     }
-    .info-msg {
-        background: linear-gradient(135deg, #3B82F6 0%, #2563EB 100%);
-        padding: 15px;
-        border-radius: 10px;
-        color: white;
-        margin: 10px 0;
+    .youtube-btn {
+        background: linear-gradient(135deg, #FF0000 0%, #CC0000 100%) !important;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -58,22 +54,28 @@ st.markdown("""
 # Login tekshirish
 if 'logged_in' not in st.session_state or not st.session_state.logged_in:
     st.warning("⚠️ Avval tizimga kiring!")
-    st.markdown("[🏠 Bosh sahifaga qaytish](/)")
     st.stop()
 
 
+# OAuth scopes - HAMMA kerakli ruxsatlar
+YT_SCOPES = [
+    'https://www.googleapis.com/auth/youtube.readonly',
+    'https://www.googleapis.com/auth/youtube.upload',
+    'https://www.googleapis.com/auth/yt-analytics.readonly',
+    'openid',
+    'https://www.googleapis.com/auth/userinfo.email',
+    'https://www.googleapis.com/auth/userinfo.profile'
+]
+
+
 # Session state
-if 'youtube_channel_url' not in st.session_state:
-    st.session_state.youtube_channel_url = ""
-if 'youtube_channel_name' not in st.session_state:
-    st.session_state.youtube_channel_name = ""
-if 'preferred_language' not in st.session_state:
-    st.session_state.preferred_language = "O'zbek"
-if 'default_niche' not in st.session_state:
-    st.session_state.default_niche = "horror_en"
+if 'youtube_credentials' not in st.session_state:
+    st.session_state.youtube_credentials = None
+if 'youtube_channel_info' not in st.session_state:
+    st.session_state.youtube_channel_info = None
 
 
-# Sahifa sarlavhasi
+# Sarlavha
 st.markdown("""
 <div style='text-align: center; padding: 20px;'>
     <h1 style='background: linear-gradient(135deg, #8B5CF6 0%, #EC4899 100%);
@@ -85,7 +87,7 @@ st.markdown("""
         ⚙️ Sozlamalar
     </h1>
     <p style='color: #CBD5E1; margin-top: 10px;'>
-        YouTube kanalingizni ulang va sozlamalarni boshqaring
+        YouTube kanalingizni ulang va boshqaring
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -94,176 +96,217 @@ st.markdown("---")
 
 
 # ============================================
-# 1. YOUTUBE KANAL ULASH
+# YOUTUBE KANAL ULASH (OAuth)
 # ============================================
 st.markdown("### 📺 YouTube Kanal Ulash")
 
-st.markdown("""
-<div class='setting-card'>
-    <h4 style='color: #A78BFA;'>Kanalingiz linkini kiriting:</h4>
-    <p style='color: #CBD5E1;'>
-        YouTube kanalingizning to'liq manzilini yozing.<br>
-        Masalan: <code>https://youtube.com/@YourChannel</code>
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-col1, col2 = st.columns([3, 1])
-
-with col1:
-    channel_url = st.text_input(
-        "YouTube Kanal Linki",
-        value=st.session_state.youtube_channel_url,
-        placeholder="https://youtube.com/@YourChannel",
-        label_visibility="collapsed"
-    )
-
-with col2:
-    if st.button("💾 Saqlash", key="save_channel"):
-        if channel_url:
-            # URL tekshirish
-            if "youtube.com" in channel_url or "youtu.be" in channel_url:
-                st.session_state.youtube_channel_url = channel_url
-                
-                # Kanal nomini ajratish
-                if "@" in channel_url:
-                    channel_name = channel_url.split("@")[-1].split("/")[0]
-                    st.session_state.youtube_channel_name = channel_name
-                else:
-                    st.session_state.youtube_channel_name = "Kanal"
-                
-                st.success("✅ Kanal muvaffaqiyatli ulandi!")
-                st.rerun()
-            else:
-                st.error("❌ Noto'g'ri YouTube link! youtube.com bo'lishi kerak")
-        else:
-            st.error("❌ Kanal linkini kiriting!")
-
-
-# Ulangan kanal ko'rsatish
-if st.session_state.youtube_channel_url:
+# Kanal ulangan bo'lsa
+if st.session_state.youtube_channel_info:
+    ch = st.session_state.youtube_channel_info
+    
+    subs = int(ch.get('subscriber_count', 0))
+    videos = int(ch.get('video_count', 0))
+    views = int(ch.get('view_count', 0))
+    
     st.markdown(f"""
-    <div class='success-msg'>
-        <h3 style='margin: 0;'>✅ Kanal ulangan!</h3>
-        <p style='margin: 5px 0;'>
-            📺 Kanal: <strong>@{st.session_state.youtube_channel_name}</strong><br>
-            🔗 Link: <a href='{st.session_state.youtube_channel_url}' target='_blank' 
-                       style='color: white;'>{st.session_state.youtube_channel_url}</a>
+    <div class='channel-card'>
+        <img src='{ch.get("thumbnail", "")}' 
+             style='width: 120px; height: 120px; border-radius: 50%; 
+                    border: 4px solid #8B5CF6; margin-bottom: 15px;
+                    box-shadow: 0 10px 30px rgba(139, 92, 246, 0.5);'>
+        <h2 style='color: white; margin: 10px 0;'>
+            ✅ {ch.get('title', 'Kanal')}
+        </h2>
+        <p style='color: #CBD5E1; margin: 5px 0; font-size: 16px;'>
+            {'@' + ch.get('custom_url') if ch.get('custom_url') else ch.get('title', '')}
         </p>
+        <div style='display: flex; justify-content: space-around; 
+                    margin-top: 25px; padding-top: 20px; 
+                    border-top: 2px solid #4C1D95;'>
+            <div>
+                <h2 style='color: #8B5CF6; margin: 0;'>{subs:,}</h2>
+                <p style='color: #CBD5E1; margin: 0;'>👥 Obunachilar</p>
+            </div>
+            <div>
+                <h2 style='color: #EC4899; margin: 0;'>{videos}</h2>
+                <p style='color: #CBD5E1; margin: 0;'>📹 Videolar</p>
+            </div>
+            <div>
+                <h2 style='color: #F59E0B; margin: 0;'>{views:,}</h2>
+                <p style='color: #CBD5E1; margin: 0;'>👁️ Ko'rishlar</p>
+            </div>
+        </div>
     </div>
     """, unsafe_allow_html=True)
     
-    col_a, col_b = st.columns(2)
-    with col_a:
-        if st.button("🔍 Kanalni Tahlil Qilish"):
-            st.info("⚡ Kanal Analiz sahifasi tez kunda qo'shiladi!")
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔍 Kanalni Chuqur Tahlil Qilish"):
+            st.info("⚡ Kanal Analiz sahifasi tez kunda!")
     
-    with col_b:
-        if st.button("🗑️ Kanalni O'chirish"):
-            st.session_state.youtube_channel_url = ""
-            st.session_state.youtube_channel_name = ""
-            st.success("✅ Kanal o'chirildi")
+    with col2:
+        if st.button("🗑️ Kanalni Uzish"):
+            st.session_state.youtube_credentials = None
+            st.session_state.youtube_channel_info = None
+            st.success("✅ Kanal uzildi")
             st.rerun()
+
 else:
+    # Kanal ulanmagan - ulash tugmasi
     st.markdown("""
-    <div class='info-msg'>
-        <h4 style='margin: 0;'>ℹ️ Kanal hali ulanmagan</h4>
-        <p style='margin: 5px 0;'>
-            YouTube kanal linkini kiriting va "Saqlash" tugmasini bosing.
+    <div class='setting-card'>
+        <h4 style='color: #A78BFA;'>📺 YouTube kanalingizni ulang</h4>
+        <p style='color: #CBD5E1;'>
+            Ulash orqali quyidagilarga ruxsat berasiz:<br>
+            ✅ Kanal statistikasini olish<br>
+            ✅ Video yuklash<br>
+            ✅ Analitika (audience, views, revenue)<br>
+            ✅ AI tahlil qilish
         </p>
     </div>
     """, unsafe_allow_html=True)
+    
+    # OAuth flow
+    try:
+        client_id = st.secrets["GOOGLE_OAUTH_CLIENT_ID"]
+        client_secret = st.secrets["GOOGLE_OAUTH_CLIENT_SECRET"]
+        redirect_uri = st.secrets.get("REDIRECT_URI", "https://nurauto.streamlit.app")
+        
+        # OAuth Flow yaratish
+        flow = Flow.from_client_config(
+            {
+                "web": {
+                    "client_id": client_id,
+                    "client_secret": client_secret,
+                    "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                    "redirect_uris": [redirect_uri]
+                }
+            },
+            scopes=YT_SCOPES,
+            redirect_uri=redirect_uri
+        )
+        
+        # URL parametridan code olish
+        query_params = st.query_params
+        
+        if "code" in query_params:
+            # Code bor - token olamiz
+            try:
+                with st.spinner("🔄 Kanal ulanmoqda..."):
+                    code = query_params["code"]
+                    flow.fetch_token(code=code)
+                    credentials = flow.credentials
+                    
+                    # Credentials saqlash
+                    st.session_state.youtube_credentials = {
+                        'token': credentials.token,
+                        'refresh_token': credentials.refresh_token,
+                        'token_uri': credentials.token_uri,
+                        'client_id': credentials.client_id,
+                        'client_secret': credentials.client_secret,
+                        'scopes': credentials.scopes
+                    }
+                    
+                    # Kanal ma'lumotlarini olish
+                    youtube = build('youtube', 'v3', credentials=credentials)
+                    response = youtube.channels().list(
+                        part='snippet,statistics',
+                        mine=True
+                    ).execute()
+                    
+                    if response.get('items'):
+                        channel = response['items'][0]
+                        snippet = channel['snippet']
+                        stats = channel['statistics']
+                        
+                        st.session_state.youtube_channel_info = {
+                            'id': channel['id'],
+                            'title': snippet['title'],
+                            'description': snippet.get('description', ''),
+                            'custom_url': snippet.get('customUrl', ''),
+                            'thumbnail': snippet['thumbnails']['high']['url'],
+                            'subscriber_count': stats.get('subscriberCount', 0),
+                            'video_count': stats.get('videoCount', 0),
+                            'view_count': stats.get('viewCount', 0),
+                        }
+                        
+                        # URL'dan code tozalash
+                        st.query_params.clear()
+                        st.success("✅ Kanal muvaffaqiyatli ulandi!")
+                        st.balloons()
+                        st.rerun()
+                    else:
+                        st.error("❌ Bu akkountda YouTube kanal topilmadi")
+                        st.info("💡 Google akkountingizda YouTube kanal borligiga ishonch hosil qiling")
+            
+            except Exception as e:
+                st.error(f"❌ Xato: {str(e)[:200]}")
+                st.info("💡 Qayta urinib ko'ring")
+                if st.button("🔄 Qayta urinish"):
+                    st.query_params.clear()
+                    st.rerun()
+        
+        else:
+            # Code yo'q - ulash tugmasini ko'rsatamiz
+            auth_url, _ = flow.authorization_url(
+                access_type='offline',
+                prompt='consent',
+                include_granted_scopes='true'
+            )
+            
+            st.markdown(f"""
+            <div style='text-align: center; margin-top: 20px;'>
+                <a href='{auth_url}' target='_self' 
+                   style='text-decoration: none;'>
+                    <button style='
+                        background: linear-gradient(135deg, #FF0000 0%, #CC0000 100%);
+                        color: white;
+                        border: none;
+                        padding: 18px 40px;
+                        border-radius: 12px;
+                        font-weight: bold;
+                        font-size: 20px;
+                        cursor: pointer;
+                        width: 100%;
+                        max-width: 400px;
+                        box-shadow: 0 8px 25px rgba(255, 0, 0, 0.4);
+                        transition: all 0.3s;
+                    '>
+                        🔗 YouTube Bilan Ulash
+                    </button>
+                </a>
+            </div>
+            """, unsafe_allow_html=True)
+            
+            st.info("💡 Tugmani bosgach, Google login sahifasi ochiladi. Kanalingizni tanlab, ruxsat bering.")
+    
+    except KeyError as e:
+        st.error(f"❌ API kalit topilmadi: {e}")
+        st.info("💡 Streamlit Secrets'da GOOGLE_OAUTH_CLIENT_ID va GOOGLE_OAUTH_CLIENT_SECRET qo'shilganligini tekshiring")
+    
+    except Exception as e:
+        st.error(f"❌ Xato: {str(e)}")
+
 
 st.markdown("---")
 
 
 # ============================================
-# 2. GOOGLE OAUTH (YouTube Upload uchun)
-# ============================================
-st.markdown("### 🔐 Google Akkount Ulash")
-
-st.markdown("""
-<div class='setting-card'>
-    <h4 style='color: #A78BFA;'>YouTube'ga avtomatik yuklash uchun:</h4>
-    <p style='color: #CBD5E1;'>
-        Google akkountingizni ulasangiz, videolar avtomatik YouTube'ga yuklanadi.
-    </p>
-</div>
-""", unsafe_allow_html=True)
-
-if st.button("🔗 Google Akkount Bilan Ulash"):
-    st.info("⚡ Bu funksiya keyingi versiyada qo'shiladi!")
-
-
-st.markdown("---")
-
-
-# ============================================
-# 3. VIDEO SOZLAMALARI
-# ============================================
-st.markdown("### 🎬 Video Sozlamalari")
-
-col1, col2 = st.columns(2)
-
-with col1:
-    st.markdown("""
-    <div class='setting-card'>
-        <h4 style='color: #A78BFA;'>Standart Niche</h4>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    niche_options = {
-        "horror_en": "🇺🇸 Horror English (Mr. Nightmare)",
-        "horror_es": "🇪🇸 Horror Spanish",
-        "history_en": "📜 History English",
-        "war_ru": "🇷🇺 War Russian (СМЕРШ)"
-    }
-    
-    selected_niche = st.selectbox(
-        "Video niche'ini tanlang:",
-        options=list(niche_options.keys()),
-        format_func=lambda x: niche_options[x],
-        index=list(niche_options.keys()).index(st.session_state.default_niche)
-    )
-    
-    if st.button("💾 Niche Saqlash"):
-        st.session_state.default_niche = selected_niche
-        st.success(f"✅ Standart niche: {niche_options[selected_niche]}")
-
-with col2:
-    st.markdown("""
-    <div class='setting-card'>
-        <h4 style='color: #A78BFA;'>Til</h4>
-    </div>
-    """, unsafe_allow_html=True)
-    
-    language = st.selectbox(
-        "Sayt tili:",
-        options=["O'zbek", "English", "Русский"],
-        index=["O'zbek", "English", "Русский"].index(st.session_state.preferred_language)
-    )
-    
-    if st.button("💾 Til Saqlash"):
-        st.session_state.preferred_language = language
-        st.success(f"✅ Til o'zgartirildi: {language}")
-
-
-st.markdown("---")
-
-
-# ============================================
-# 4. PROFIL MA'LUMOTLARI
+# PROFIL MA'LUMOTLARI
 # ============================================
 st.markdown("### 👤 Profil Ma'lumotlari")
 
+profile_youtube = "❌ Ulanmagan"
+if st.session_state.youtube_channel_info:
+    profile_youtube = f"✅ {st.session_state.youtube_channel_info['title']}"
+
 st.markdown(f"""
 <div class='setting-card'>
-    <p style='color: #CBD5E1;'>
+    <p style='color: #CBD5E1; font-size: 16px; line-height: 1.8;'>
         <strong>📧 Email:</strong> {st.session_state.get('user_email', 'Kirilmagan')}<br>
         <strong>👤 Foydalanuvchi:</strong> {st.session_state.get('user_name', 'Kirilmagan')}<br>
-        <strong>📺 YouTube Kanal:</strong> {'@' + st.session_state.youtube_channel_name if st.session_state.youtube_channel_name else 'Ulanmagan'}<br>
-        <strong>🎬 Standart Niche:</strong> {niche_options.get(st.session_state.default_niche, 'Tanlanmagan')}<br>
-        <strong>🌐 Til:</strong> {st.session_state.preferred_language}
+        <strong>📺 YouTube:</strong> {profile_youtube}
     </p>
 </div>
 """, unsafe_allow_html=True)
@@ -272,28 +315,16 @@ st.markdown(f"""
 st.markdown("---")
 
 
-# ============================================
-# 5. XAVFLI ZONA
-# ============================================
-st.markdown("### ⚠️ Xavfli Zona")
-
+# Chiqish
 col1, col2 = st.columns(2)
-
 with col1:
-    if st.button("🚪 Chiqish", use_container_width=True):
-        st.session_state.logged_in = False
-        st.session_state.user_email = None
-        st.session_state.user_name = None
-        st.success("✅ Tizimdan chiqildi")
-        st.markdown("[🏠 Bosh sahifaga qaytish](/)")
+    if st.button("🚪 Chiqish"):
+        for key in list(st.session_state.keys()):
+            del st.session_state[key]
         st.rerun()
 
 with col2:
-    if st.button("🗑️ Barcha ma'lumotlarni tozalash", use_container_width=True):
-        for key in list(st.session_state.keys()):
-            del st.session_state[key]
-        st.success("✅ Barcha ma'lumotlar tozalandi")
-        st.rerun()
+    st.markdown("[🏠 Bosh sahifaga qaytish](/)")
 
 
 # Sidebar
@@ -311,14 +342,15 @@ with st.sidebar:
     
     st.markdown("---")
     
-    if st.session_state.youtube_channel_url:
-        st.success(f"✅ Kanal: @{st.session_state.youtube_channel_name}")
+    if st.session_state.youtube_channel_info:
+        ch = st.session_state.youtube_channel_info
+        subs = int(ch.get('subscriber_count', 0))
+        st.success(f"✅ {ch['title'][:20]}")
+        st.markdown(f"👥 {subs:,} obunachilar")
     else:
         st.warning("⚠️ Kanal ulanmagan")
     
     st.markdown("---")
-    
     st.markdown("### 📊 Statistika")
     st.markdown("- Videolar: **0**")
     st.markdown("- Bugun: **0**")
-    st.markdown("- Kvota: **500/500**")
